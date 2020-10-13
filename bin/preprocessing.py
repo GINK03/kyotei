@@ -50,11 +50,11 @@ if not (TOP_DIR / "var/qtp.csv").exists():
                     q_tp[q] = Sources()
                 q_tp[q].date = qp["hd"]
                 # print(link, q_tp[q])            
-                if "/odds3t?" in link:
+                if "/odds3t?" in link and (HTML_DIR / get_digest(link)).exists():
                     q_tp[q].odds3t = link
-                elif "/raceresult?" in link:
+                elif "/raceresult?" in link and (HTML_DIR / get_digest(link)).exists():
                     q_tp[q].raceresult = link
-                elif "/beforeinfo?" in link:
+                elif "/beforeinfo?" in link and (HTML_DIR / get_digest(link)).exists():
                     q_tp[q].beforeinfo = link
                 else:
                     continue
@@ -65,51 +65,99 @@ if not (TOP_DIR / "var/qtp.csv").exists():
 df = pd.read_csv(TOP_DIR / "var/qtp.csv")
 for col in ["odds3t", "raceresult", "beforeinfo"]:
     df = df[pd.notnull(df[col])]
-print(df)
-"""
-with requests.get("https://www.boatrace.jp/owpc/pc/race/raceresult?rno=1&jcd=03&hd=20201013") as r:
-    soup = BeautifulSoup(r.text)
 
-# print(soup)
-for a in soup.find_all("tbody"):
-    td = a.find_all("td")
-    if len(td) != 4:
+def parse_pages(q, raceresult, odds3t, beforeinfo):
+
+    with bz2.open(HTML_DIR / get_digest(raceresult), "rt") as fp:
+        soup = BeautifulSoup(fp.read(), "lxml")
+
+    results = []
+    for a in soup.find_all("tbody"):
+        td = a.find_all("td")
+        if len(td) != 4:
+            continue
+
+        chaku = td[0].text.strip()
+        waku = td[1].text.strip()
+        racer = td[2].find_all("span")[-1].text.strip()
+        racer = re.sub("\s{1,}", " ", racer)
+        time = td[3].text.strip()
+
+        results.append([chaku, waku, racer, time])
+    results = np.array(results)
+    results = pd.DataFrame(results)
+    if len(results) != 6:
+        return None
+    results.columns = ["chaku", "waku", "racer", "time"]
+    results.sort_values(by=["waku"], inplace=True)
+    # print(results)
+
+    with bz2.open(HTML_DIR / get_digest(odds3t), "rt") as fp:
+        soup = BeautifulSoup(fp.read(), "lxml")
+
+    odds = []
+    for o in soup.find_all("td", {"class": "oddsPoint"}):
+        try:
+            odds.append(float(o.text.strip()))
+        except:
+            odds.append(None)
+    odds = np.array(odds)
+    try:
+        odds = odds.reshape(20, 6)
+    except Exception as exc:
+        # 中止等
+        return None
+    odds = pd.DataFrame(odds)
+    odds.columns = [f"waku_{i}" for i in range(1, 7)]
+    # print(odds)
+    with bz2.open(HTML_DIR / get_digest(beforeinfo), "rt") as fp:
+        soup = BeautifulSoup(fp.read(), "lxml")
+    
+    details = []
+    for tbody in soup.find_all("tbody", {"class": "is-fs12"}):
+        xs = [x.text for x in tbody.find_all("td")]
+        # ['1', '', '白石\u3000\u3000\u3000健', '51.1kg', '6.70', '0.5', '\xa0', '\n\n\n', 'R', '2', '進入', '3', '0.0', 'ST', '.28', '着順', '１']
+        waku = xs[0]
+        name = re.sub("\s{1,}", " ", xs[2])
+        weight = xs[3]
+        tenji_time = xs[4]
+        tilt = xs[5]
+        details.append([waku, name, weight, tenji_time, tilt])
+    details = pd.DataFrame(details)
+    details.columns = ["waku", "name", "weight", "tenji_time", "tilt"]
+    # print(details)
+
+    df = pd.merge(results, details, on=["waku"], how="inner")
+    df["q"] = q
+    qparam = dict([x.split("=") for x in q.split("&")])
+    df["date"] = qparam["hd"]
+    df["rno"] = qparam["rno"]
+
+    def stats(waku):
+        mi = odds[f"waku_{waku}"].min()
+        ma = odds[f"waku_{waku}"].max()
+        mean = odds[f"waku_{waku}"].mean()
+        median = odds[f"waku_{waku}"].median()
+        return [waku, mi, ma, mean, median]
+    a = pd.DataFrame(np.array(df.waku.apply(stats).tolist()))
+    a.columns = ["waku", "mi", "ma", "mean", "median"]
+    df = pd.merge(df, a, on=["waku"], how="inner")
+    # print(a)
+    # print(df)
+    
+    return df
+
+subs = []
+for i in tqdm(range(len(df))):
+    r = df.iloc[i]
+    try:
+        sub = parse_pages(
+                q=r.q,
+                raceresult=r.raceresult,  
+                odds3t=r.odds3t, 
+                beforeinfo=r.beforeinfo)
+    except Exception as exc:
+        print(exc)
         continue
-
-    chaku = td[0].text.strip()
-    waku = td[1].text.strip()
-    racer = td[2].find_all("span")[-1].text.strip()
-    racer = re.sub("\s{1,}", " ", racer)
-    time = td[3].text.strip()
-
-    print(chaku, waku, racer, time)
-    # print(a.prettify())
-"""
-"""
-with requests.get("https://www.boatrace.jp/owpc/pc/race/odds3t?rno=1&jcd=03&hd=20201013") as r:
-    soup = BeautifulSoup(r.text)
-
-odds = []
-for o in soup.find_all("td", {"class": "oddsPoint"}):
-    odds.append(o.text)
-odds = np.array(odds)
-odds = odds.reshape(20, 6)
-odds = pd.DataFrame(odds)
-odds.columns = [f"waku_{i}" for i in range(1, 7)]
-print(odds)
-"""
-"""
-with requests.get("https://www.boatrace.jp/owpc/pc/race/beforeinfo?rno=12&jcd=03&hd=20201013") as r:
-    soup = BeautifulSoup(r.text, "lxml")
-
-for tbody in soup.find_all("tbody", {"class": "is-fs12"}):
-
-    print(tbody.prettify())
-    xs = [x.text for x in tbody.find_all("td")]
-    # ['1', '', '白石\u3000\u3000\u3000健', '51.1kg', '6.70', '0.5', '\xa0', '\n\n\n', 'R', '2', '進入', '3', '0.0', 'ST', '.28', '着順', '１']
-    waku = xs[0]
-    name = xs[2]
-    weight = xs[3]
-    tenji_time = xs[4]
-    tilt = xs[5]
-"""
+    subs.append(sub)
+pd.concat(subs).to_csv(TOP_DIR / "var/preprocessed.csv", index=None)
